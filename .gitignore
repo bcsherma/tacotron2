@@ -1,0 +1,8 @@
+LJSpeech-1.1/
+__pycache__/
+outdir/
+logdir/
+wandb/
+.python-version
+*.tar.bz2
+*.pt
