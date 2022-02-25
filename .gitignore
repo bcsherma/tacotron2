@@ -6,3 +6,6 @@ wandb/
 .python-version
 *.tar.bz2
 *.pt
+data/
+artifacts/
+filelists/
