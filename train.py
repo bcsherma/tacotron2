@@ -192,6 +192,11 @@ def prepare_dataset(dataset):
         index_col=0,
     )
 
+    try:
+        os.mkdir("./filelists")
+    except OSError:
+        pass
+
     for split in ["train", "validation", "test"]:
         path = data_art.get_path(f"{split}.tar.bz2").download()
         filelist=[]

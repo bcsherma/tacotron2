@@ -2,6 +2,7 @@ import os
 import random
 import tarfile
 
+import pandas as pd
 import wandb
 
 
@@ -40,6 +41,13 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
     # Add transcription data to artifact
     split_dataset.add_file("LJSpeech-1.1/metadata.csv", name="transcriptions")
 
+    meta = pd.read_csv(
+        "LJSpeech-1.1/metadata.csv",
+        sep="|",
+        names=["file", "sentence"],
+        index_col=0,
+    )
+
     # Get a list of all wav files and randomize the order
     all_files = os.listdir("LJSpeech-1.1/wavs")
     assert n_train + n_validation + n_test <= len(all_files)
@@ -53,11 +61,15 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
         (n_test, "test"),
     ):
         with tarfile.open(f"{split}.tar.bz2", "w:bz2") as tarball:
-            for _ in range(size):
+            jdx = 0
+            while jdx < size:
+                if not meta.loc[all_files[idx].split(".")[0], "sentence"]:
+                    pass
                 tarball.add(
                     f"LJSpeech-1.1/wavs/{all_files[idx]}", arcname=f"{all_files[idx]}"
                 )
                 idx += 1
+                jdx += 1
         split_dataset.add_file(f"{split}.tar.bz2")
 
     # Log final artifact
