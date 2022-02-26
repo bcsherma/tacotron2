@@ -18,6 +18,7 @@ from hparams import create_hparams
 from logger import Tacotron2Logger
 from loss_function import Tacotron2Loss
 from model import Tacotron2
+from plotting_utils import plot_spectrogram_to_numpy
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -162,7 +163,7 @@ def validate(
             pin_memory=False,
             collate_fn=collate_fn,
         )
-
+        table = wandb.Table(columns=["step", "sentence", "audio", "ground truth", "prediction"])
         val_loss = 0.0
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
@@ -173,18 +174,30 @@ def validate(
             else:
                 reduced_val_loss = loss.item()
             val_loss += reduced_val_loss
+            inputs = valset.audiopaths_and_text[batch_size * i : batch_size * (i + 1)]
+            _, mel_outputs, _, _ = y_pred
+            mel_targets, _ = y
+            for (audio, sentence), y, y_pred in zip(inputs, mel_targets, mel_outputs):
+                table.add_data(
+                    iteration,
+                    sentence,
+                    wandb.Audio(audio),
+                    wandb.Image(plot_spectrogram_to_numpy(y.data.cpu().numpy())),
+                    wandb.Image(plot_spectrogram_to_numpy(y_pred.data.cpu().numpy())),
+                )
         val_loss = val_loss / (i + 1)
-
+    
     model.train()
     if rank == 0:
         print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-        logger.log_validation(val_loss, model, y, y_pred, iteration)
+        wandb.log({"val_predicitons": table})
+        # logger.log_validation(val_loss, model, y, y_pred, iteration)
 
 
 def prepare_dataset(dataset):
 
     data_art = wandb.use_artifact(dataset)
-    
+
     meta = pd.read_csv(
         data_art.get_path("transcriptions").download(),
         sep="|",
@@ -199,7 +212,7 @@ def prepare_dataset(dataset):
 
     for split in ["train", "validation", "test"]:
         path = data_art.get_path(f"{split}.tar.bz2").download()
-        filelist=[]
+        filelist = []
         with tarfile.open(path, "r:bz2") as tarball:
             tarball.extractall(f"data/{split}/")
             for file in tarball.getnames():
@@ -207,6 +220,7 @@ def prepare_dataset(dataset):
                 filelist.append([f"data/{split}/{file}", meta.loc[name, "sentence"]])
         filelist = pd.DataFrame(filelist)
         filelist.to_csv(f"filelists/{split}.txt", sep="|", header=False, index=False)
+
 
 def train(
     output_directory,
@@ -324,7 +338,7 @@ def train(
                     reduced_loss, grad_norm, learning_rate, duration, iteration
                 )
 
-            if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
+            if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0) and iteration > 0:
                 validate(
                     model,
                     criterion,
