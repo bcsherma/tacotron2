@@ -9,3 +9,4 @@ wandb/
 data/
 artifacts/
 filelists/
+.vscode/
