@@ -215,7 +215,6 @@ def prepare_dataset(dataset):
 
 def train(
     output_directory,
-    log_directory,
     checkpoint_path,
     warm_start,
     n_gpus,
@@ -236,7 +235,7 @@ def train(
     hparams (object): comma separated list of "name=value" pairs.
     """
 
-    wandb.init(job_type="train")
+    wandb.init(job_type="train", config=hparams)
 
     prepare_dataset(dataset)
 
@@ -397,7 +396,6 @@ if __name__ == "__main__":
 
     train(
         args.output_directory,
-        args.log_directory,
         args.checkpoint_path,
         args.warm_start,
         args.n_gpus,
