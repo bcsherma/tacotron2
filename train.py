@@ -70,23 +70,6 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     return model, optimizer, learning_rate, iteration
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
-    print(
-        "Saving model and optimizer state at iteration {} to {}".format(
-            iteration, filepath
-        )
-    )
-    torch.save(
-        {
-            "iteration": iteration,
-            "state_dict": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "learning_rate": learning_rate,
-        },
-        filepath,
-    )
-
-
 def validate(
     model,
     criterion,
@@ -249,15 +232,10 @@ def train(
                     hparams.batch_size,
                     collate_fn,
                 )
-                checkpoint_path = os.path.join(
-                    output_directory, "checkpoint_{}".format(iteration)
-                )
-                save_checkpoint(
-                    model, optimizer, learning_rate, iteration, checkpoint_path
-                )
-
-            iteration += 1
-
+    torch.save(model.state_dict(), "model.pt")
+    model_artifact = wandb.Artifact("tacotron2", type="model")
+    model_artifact.add_file("model.pt")
+    wandb.log_artifact(model_artifact)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -302,7 +280,6 @@ if __name__ == "__main__":
         except OSError:
             print(f"Directory {directory} already exists")
 
-    print("FP16 Run:", hparams.fp16_run)
     print("Dynamic Loss Scaling:", hparams.dynamic_loss_scaling)
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
