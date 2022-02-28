@@ -15,7 +15,6 @@ import wandb
 from data_utils import TextMelCollate, TextMelLoader
 from distributed import apply_gradient_allreduce
 from hparams import create_hparams
-from logger import Tacotron2Logger
 from loss_function import Tacotron2Loss
 from model import Tacotron2
 from plotting_utils import plot_spectrogram_to_numpy
@@ -71,17 +70,6 @@ def prepare_dataloaders(hparams):
         collate_fn=collate_fn,
     )
     return train_loader, valset, collate_fn
-
-
-def prepare_directories_and_logger(output_directory, log_directory, rank):
-    if rank == 0:
-        if not os.path.isdir(output_directory):
-            os.makedirs(output_directory)
-            os.chmod(output_directory, 0o775)
-        logger = Tacotron2Logger(os.path.join(output_directory, log_directory))
-    else:
-        logger = None
-    return logger
 
 
 def load_model(hparams):
@@ -146,7 +134,6 @@ def validate(
     batch_size,
     n_gpus,
     collate_fn,
-    logger,
     distributed_run,
     rank,
 ):
@@ -163,7 +150,9 @@ def validate(
             pin_memory=False,
             collate_fn=collate_fn,
         )
-        table = wandb.Table(columns=["step", "sentence", "audio", "ground truth", "prediction"])
+        table = wandb.Table(
+            columns=["step", "sentence", "audio", "ground truth", "prediction"]
+        )
         val_loss = 0.0
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
@@ -186,12 +175,14 @@ def validate(
                     wandb.Image(plot_spectrogram_to_numpy(y_pred.data.cpu().numpy())),
                 )
         val_loss = val_loss / (i + 1)
-    
+
     model.train()
     if rank == 0:
         print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-        wandb.log({"val_predicitons": table})
-        # logger.log_validation(val_loss, model, y, y_pred, iteration)
+        wandb.log(
+            {"validation/predictions": table, "validation/loss": val_loss},
+            step=iteration,
+        )
 
 
 def prepare_dataset(dataset):
@@ -245,7 +236,7 @@ def train(
     hparams (object): comma separated list of "name=value" pairs.
     """
 
-    wandb.init(job_type="train", sync_tensorboard=True)
+    wandb.init(job_type="train")
 
     prepare_dataset(dataset)
 
@@ -260,18 +251,11 @@ def train(
     optimizer = torch.optim.Adam(
         model.parameters(), lr=learning_rate, weight_decay=hparams.weight_decay
     )
-
-    if hparams.fp16_run:
-        from apex import amp
-
-        model, optimizer = amp.initialize(model, optimizer, opt_level="O2")
-
+    
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
 
     criterion = Tacotron2Loss()
-
-    logger = prepare_directories_and_logger(output_directory, log_directory, rank)
 
     train_loader, valset, collate_fn = prepare_dataloaders(hparams)
 
@@ -309,36 +293,30 @@ def train(
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
                 reduced_loss = loss.item()
-            if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
+           
+            loss.backward()
 
-            if hparams.fp16_run:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), hparams.grad_clip_thresh
-                )
-                is_overflow = math.isnan(grad_norm)
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), hparams.grad_clip_thresh
-                )
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), hparams.grad_clip_thresh
+            )
 
             optimizer.step()
 
             if not is_overflow and rank == 0:
-                duration = time.perf_counter() - start
-                print(
-                    "Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
-                        iteration, reduced_loss, grad_norm, duration
-                    )
-                )
-                logger.log_training(
-                    reduced_loss, grad_norm, learning_rate, duration, iteration
+                wandb.log(
+                    {
+                        "train/loss": reduced_loss,
+                        "train/grad_norm": grad_norm,
+                        "train/learning_rate": learning_rate,
+                    },
+                    step=iteration,
                 )
 
-            if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0) and iteration > 0:
+            if (
+                not is_overflow
+                and (iteration % hparams.iters_per_checkpoint == 0)
+                and iteration > 0
+            ):
                 validate(
                     model,
                     criterion,
@@ -347,7 +325,6 @@ def train(
                     hparams.batch_size,
                     n_gpus,
                     collate_fn,
-                    logger,
                     hparams.distributed_run,
                     rank,
                 )

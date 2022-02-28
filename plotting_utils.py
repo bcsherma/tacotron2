@@ -30,7 +30,7 @@ def plot_alignment_to_numpy(alignment, info=None):
 
 
 def plot_spectrogram_to_numpy(spectrogram):
-    fig, ax = plt.subplots(figsize=(12, 3))
+    fig, ax = plt.subplots(figsize=(12, 8))
     im = ax.imshow(spectrogram, aspect="auto", origin="lower",
                    interpolation='none')
     plt.colorbar(im, ax=ax)
