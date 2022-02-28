@@ -1,4 +1,5 @@
 import argparse
+from logging import root
 import math
 import os
 import tarfile
@@ -6,44 +7,15 @@ import time
 
 import pandas as pd
 import torch
-import torch.distributed as dist
 from numpy import finfo
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 
 import wandb
 from data_utils import TextMelCollate, TextMelLoader
-from distributed import apply_gradient_allreduce
 from hparams import create_hparams
 from loss_function import Tacotron2Loss
 from model import Tacotron2
 from plotting_utils import plot_spectrogram_to_numpy
-
-
-def reduce_tensor(tensor, n_gpus):
-    rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.reduce_op.SUM)
-    rt /= n_gpus
-    return rt
-
-
-def init_distributed(hparams, n_gpus, rank, group_name):
-    assert torch.cuda.is_available(), "Distributed mode requires CUDA."
-    print("Initializing Distributed")
-
-    # Set cuda device so everything is done on the right GPU.
-    torch.cuda.set_device(rank % torch.cuda.device_count())
-
-    # Initialize distributed communication
-    dist.init_process_group(
-        backend=hparams.dist_backend,
-        init_method=hparams.dist_url,
-        world_size=n_gpus,
-        rank=rank,
-        group_name=group_name,
-    )
-
-    print("Done initializing distributed")
 
 
 def prepare_dataloaders(hparams):
@@ -52,12 +24,8 @@ def prepare_dataloaders(hparams):
     valset = TextMelLoader(hparams.validation_files, hparams)
     collate_fn = TextMelCollate(hparams.n_frames_per_step)
 
-    if hparams.distributed_run:
-        train_sampler = DistributedSampler(trainset)
-        shuffle = False
-    else:
-        train_sampler = None
-        shuffle = True
+    train_sampler = None
+    shuffle = True
 
     train_loader = DataLoader(
         trainset,
@@ -73,14 +41,7 @@ def prepare_dataloaders(hparams):
 
 
 def load_model(hparams):
-    model = Tacotron2(hparams).cuda()
-    if hparams.fp16_run:
-        model.decoder.attention_layer.score_mask_value = finfo("float16").min
-
-    if hparams.distributed_run:
-        model = apply_gradient_allreduce(model)
-
-    return model
+    return Tacotron2(hparams).cuda()
 
 
 def warm_start_model(checkpoint_path, model, ignore_layers):
@@ -132,18 +93,14 @@ def validate(
     valset,
     iteration,
     batch_size,
-    n_gpus,
     collate_fn,
-    distributed_run,
-    rank,
 ):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
-        val_sampler = DistributedSampler(valset) if distributed_run else None
         val_loader = DataLoader(
             valset,
-            sampler=val_sampler,
+            sampler=None,
             num_workers=1,
             shuffle=False,
             batch_size=batch_size,
@@ -158,10 +115,7 @@ def validate(
             x, y = model.parse_batch(batch)
             y_pred = model(x)
             loss = criterion(y_pred, y)
-            if distributed_run:
-                reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_val_loss = loss.item()
+            reduced_val_loss = loss.item()
             val_loss += reduced_val_loss
             inputs = valset.audiopaths_and_text[batch_size * i : batch_size * (i + 1)]
             _, mel_outputs, _, _ = y_pred
@@ -177,12 +131,11 @@ def validate(
         val_loss = val_loss / (i + 1)
 
     model.train()
-    if rank == 0:
-        print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-        wandb.log(
-            {"validation/predictions": table, "validation/loss": val_loss},
-            step=iteration,
-        )
+    print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
+    wandb.log(
+        {"validation/predictions": table, "validation/loss": val_loss},
+        step=iteration,
+    )
 
 
 def prepare_dataset(dataset):
@@ -196,10 +149,6 @@ def prepare_dataset(dataset):
         index_col=0,
     )
 
-    try:
-        os.mkdir("./filelists")
-    except OSError:
-        pass
 
     for split in ["train", "validation", "test"]:
         path = data_art.get_path(f"{split}.tar.bz2").download()
@@ -217,9 +166,6 @@ def train(
     output_directory,
     checkpoint_path,
     warm_start,
-    n_gpus,
-    rank,
-    group_name,
     hparams,
     dataset,
 ):
@@ -230,17 +176,12 @@ def train(
     output_directory (string): directory to save checkpoints
     log_directory (string) directory to save tensorboard logs
     checkpoint_path(string): checkpoint path
-    n_gpus (int): number of gpus
-    rank (int): rank of current gpu
     hparams (object): comma separated list of "name=value" pairs.
     """
 
     wandb.init(job_type="train", config=hparams)
 
     prepare_dataset(dataset)
-
-    if hparams.distributed_run:
-        init_distributed(hparams, n_gpus, rank, group_name)
 
     torch.manual_seed(hparams.seed)
     torch.cuda.manual_seed(hparams.seed)
@@ -250,9 +191,6 @@ def train(
     optimizer = torch.optim.Adam(
         model.parameters(), lr=learning_rate, weight_decay=hparams.weight_decay
     )
-    
-    if hparams.distributed_run:
-        model = apply_gradient_allreduce(model)
 
     criterion = Tacotron2Loss()
 
@@ -262,17 +200,9 @@ def train(
     iteration = 0
     epoch_offset = 0
     if checkpoint_path is not None:
-        if warm_start:
-            model = warm_start_model(checkpoint_path, model, hparams.ignore_layers)
-        else:
-            model, optimizer, _learning_rate, iteration = load_checkpoint(
-                checkpoint_path, model, optimizer
-            )
-            if hparams.use_saved_learning_rate:
-                learning_rate = _learning_rate
-            iteration += 1  # next iteration is iteration + 1
-            epoch_offset = max(0, int(iteration / len(train_loader)))
-
+        model_artifact = wandb.use_artifact(checkpoint_path)
+        path = model_artifact.get_path("pretrained-model.pt").download(root=output_directory)
+        model = warm_start_model(path, model, hparams.ignore_layers)
     model.train()
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
@@ -288,11 +218,7 @@ def train(
             y_pred = model(x)
 
             loss = criterion(y_pred, y)
-            if hparams.distributed_run:
-                reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_loss = loss.item()
-           
+            reduced_loss = loss.item()
             loss.backward()
 
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -301,15 +227,14 @@ def train(
 
             optimizer.step()
 
-            if not is_overflow and rank == 0:
-                wandb.log(
-                    {
-                        "train/loss": reduced_loss,
-                        "train/grad_norm": grad_norm,
-                        "train/learning_rate": learning_rate,
-                    },
-                    step=iteration,
-                )
+            wandb.log(
+                {
+                    "train/loss": reduced_loss,
+                    "train/grad_norm": grad_norm,
+                    "train/learning_rate": learning_rate,
+                },
+                step=iteration,
+            )
 
             if (
                 not is_overflow
@@ -322,18 +247,14 @@ def train(
                     valset,
                     iteration,
                     hparams.batch_size,
-                    n_gpus,
                     collate_fn,
-                    hparams.distributed_run,
-                    rank,
                 )
-                if rank == 0:
-                    checkpoint_path = os.path.join(
-                        output_directory, "checkpoint_{}".format(iteration)
-                    )
-                    save_checkpoint(
-                        model, optimizer, learning_rate, iteration, checkpoint_path
-                    )
+                checkpoint_path = os.path.join(
+                    output_directory, "checkpoint_{}".format(iteration)
+                )
+                save_checkpoint(
+                    model, optimizer, learning_rate, iteration, checkpoint_path
+                )
 
             iteration += 1
 
@@ -346,36 +267,23 @@ if __name__ == "__main__":
         help="<artifact:version> formatted path to dataset artifact",
     )
     parser.add_argument(
-        "-o", "--output_directory", type=str, help="directory to save checkpoints"
+        "-o", "--output_directory", type=str, help="directory to save checkpoints", default="output/"
     )
     parser.add_argument(
-        "-l", "--log_directory", type=str, help="directory to save tensorboard logs"
+        "-l", "--log_directory", type=str, help="directory to save tensorboard logs", default="logs/"
     )
     parser.add_argument(
         "-c",
-        "--checkpoint_path",
+        "--checkpoint_artifact",
         type=str,
-        default=None,
+        default="tacotron-pretrained:latest",
         required=False,
-        help="checkpoint path",
+        help="checkpoint artifact name",
     )
     parser.add_argument(
         "--warm_start",
         action="store_true",
         help="load model weights only, ignore specified layers",
-    )
-    parser.add_argument(
-        "--n_gpus", type=int, default=1, required=False, help="number of gpus"
-    )
-    parser.add_argument(
-        "--rank", type=int, default=0, required=False, help="rank of current gpu"
-    )
-    parser.add_argument(
-        "--group_name",
-        type=str,
-        default="group_name",
-        required=False,
-        help="Distributed group name",
     )
     parser.add_argument(
         "--hparams", type=str, required=False, help="comma separated name=value pairs"
@@ -388,19 +296,21 @@ if __name__ == "__main__":
     torch.backends.cudnn.enabled = hparams.cudnn_enabled
     torch.backends.cudnn.benchmark = hparams.cudnn_benchmark
 
+    for directory in ["filelists", args.output_directory, args.log_directory]:
+        try:
+            os.mkdir(directory)
+        except OSError:
+            print(f"Directory {directory} already exists")
+
     print("FP16 Run:", hparams.fp16_run)
     print("Dynamic Loss Scaling:", hparams.dynamic_loss_scaling)
-    print("Distributed Run:", hparams.distributed_run)
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
 
     train(
         args.output_directory,
-        args.checkpoint_path,
+        args.checkpoint_artifact,
         args.warm_start,
-        args.n_gpus,
-        args.rank,
-        args.group_name,
         hparams,
         args.dataset,
     )
