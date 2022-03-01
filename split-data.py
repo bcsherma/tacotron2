@@ -61,7 +61,7 @@ def split_dataset(source_artifact, n_train, n_validation):
             jdx = 0
             while jdx < size:
                 if not meta.loc[all_files[idx].split(".")[0], "sentence"]:
-                    pass
+                    continue
                 tarball.add(
                     f"LJSpeech-1.1/wavs/{all_files[idx]}", arcname=f"{all_files[idx]}"
                 )

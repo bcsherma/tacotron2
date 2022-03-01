@@ -127,7 +127,7 @@ def prepare_dataset(dataset):
         index_col=0,
     )
 
-    for split in ["train", "validation", "test"]:
+    for split in ["train", "validation"]:
         path = data_art.get_path(f"{split}.tar.bz2").download()
         filelist = []
         with tarfile.open(path, "r:bz2") as tarball:
@@ -177,9 +177,7 @@ def train(
     epoch_offset = 0
     if checkpoint_path is not None:
         model_artifact = wandb.use_artifact(checkpoint_path)
-        path = model_artifact.get_path("pretrained-model.pt").download(
-            root=output_directory
-        )
+        path = model_artifact.get_path("pretrained-model.pt").download()
         model = warm_start_model(path, model, hparams["ignore_layers"])
     model.train()
     is_overflow = False
