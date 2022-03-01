@@ -6,14 +6,13 @@ import pandas as pd
 import wandb
 
 
-def split_dataset(source_artifact, n_train, n_validation, n_test):
-    """Split raw data artifact into train, validation, and test sets.
+def split_dataset(source_artifact, n_train, n_validation):
+    """Split raw data artifact into train and validation sets.
 
     Args:
         source_artifact: <artifact:version> formatted raw data artifact path.
         n_train: Number of examples to include in the train set.
         n_validation: Number of examples to include in the validation set.
-        n_test: Number of examples to include in the test set.
     """
 
     # Initialize wandb Run of type split-data
@@ -29,12 +28,11 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
 
     # Construct new artifact
     split_dataset = wandb.Artifact(
-        "split-lsj",
+        "split-ljs",
         type="split data",
         metadata={
             "train-examples": n_train,
             "val-examples": n_validation,
-            "test-examples": n_test,
         },
     )
 
@@ -50,7 +48,7 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
 
     # Get a list of all wav files and randomize the order
     all_files = os.listdir("LJSpeech-1.1/wavs")
-    assert n_train + n_validation + n_test <= len(all_files)
+    assert n_train + n_validation <= len(all_files)
     random.shuffle(all_files)
     idx = 0
 
@@ -58,7 +56,6 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
     for size, split in (
         (n_train, "train"),
         (n_validation, "validation"),
-        (n_test, "test"),
     ):
         with tarfile.open(f"{split}.tar.bz2", "w:bz2") as tarball:
             jdx = 0
@@ -77,4 +74,4 @@ def split_dataset(source_artifact, n_train, n_validation, n_test):
 
 
 if __name__ == "__main__":
-    split_dataset("lsj-tarball:latest", 160, 32, 128)
+    split_dataset("ljs-tarball:latest", 1024, 128)
