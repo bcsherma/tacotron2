@@ -224,9 +224,9 @@ def train(
                     hparams["batch_size"],
                     collate_fn,
                 )
-            
+
             iteration += 1
-    
+
     # Save final model as an Artifact
     torch.save(model.state_dict(), "model.pt")
     model_artifact = wandb.Artifact("tacotron2", type="model")
