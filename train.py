@@ -1,28 +1,26 @@
 import argparse
-from logging import root
-import math
 import os
 import tarfile
 import time
 
 import pandas as pd
 import torch
-from numpy import finfo
 from torch.utils.data import DataLoader
 
 import wandb
 from data_utils import TextMelCollate, TextMelLoader
-from hparams import create_hparams
 from loss_function import Tacotron2Loss
 from model import Tacotron2
 from plotting_utils import plot_spectrogram_to_numpy
 
+import yaml
+
 
 def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
-    trainset = TextMelLoader(hparams.training_files, hparams)
-    valset = TextMelLoader(hparams.validation_files, hparams)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step)
+    trainset = TextMelLoader(hparams["training_files"], hparams)
+    valset = TextMelLoader(hparams["validation_files"], hparams)
+    collate_fn = TextMelCollate(hparams["n_frames_per_step"])
 
     train_sampler = None
     shuffle = True
@@ -32,7 +30,7 @@ def prepare_dataloaders(hparams):
         num_workers=1,
         shuffle=shuffle,
         sampler=train_sampler,
-        batch_size=hparams.batch_size,
+        batch_size=hparams["batch_size"],
         pin_memory=False,
         drop_last=True,
         collate_fn=collate_fn,
@@ -115,10 +113,7 @@ def validate(
 
     model.train()
     print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-    wandb.log(
-        {"validation/predictions": table, "validation/loss": val_loss},
-        step=iteration,
-    )
+    wandb.log({"validation/predictions": table, "validation/loss": val_loss})
 
 
 def prepare_dataset(dataset):
@@ -131,7 +126,6 @@ def prepare_dataset(dataset):
         names=["file", "sentence"],
         index_col=0,
     )
-
 
     for split in ["train", "validation", "test"]:
         path = data_art.get_path(f"{split}.tar.bz2").download()
@@ -148,7 +142,6 @@ def prepare_dataset(dataset):
 def train(
     output_directory,
     checkpoint_path,
-    warm_start,
     hparams,
     dataset,
 ):
@@ -166,13 +159,13 @@ def train(
 
     prepare_dataset(dataset)
 
-    torch.manual_seed(hparams.seed)
-    torch.cuda.manual_seed(hparams.seed)
+    torch.manual_seed(hparams["seed"])
+    torch.cuda.manual_seed(hparams["seed"])
 
     model = load_model(hparams)
-    learning_rate = hparams.learning_rate
+    learning_rate = hparams["learning_rate"]
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=learning_rate, weight_decay=hparams.weight_decay
+        model.parameters(), lr=learning_rate, weight_decay=hparams["weight_decay"]
     )
 
     criterion = Tacotron2Loss()
@@ -184,15 +177,16 @@ def train(
     epoch_offset = 0
     if checkpoint_path is not None:
         model_artifact = wandb.use_artifact(checkpoint_path)
-        path = model_artifact.get_path("pretrained-model.pt").download(root=output_directory)
-        model = warm_start_model(path, model, hparams.ignore_layers)
+        path = model_artifact.get_path("pretrained-model.pt").download(
+            root=output_directory
+        )
+        model = warm_start_model(path, model, hparams["ignore_layers"])
     model.train()
     is_overflow = False
     # ================ MAIN TRAINNIG LOOP! ===================
-    for epoch in range(epoch_offset, hparams.epochs):
+    for epoch in range(epoch_offset, hparams["epochs"]):
         print("Epoch: {}".format(epoch))
-        for i, batch in enumerate(train_loader):
-            start = time.perf_counter()
+        for _, batch in enumerate(train_loader):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = learning_rate
 
@@ -205,7 +199,7 @@ def train(
             loss.backward()
 
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), hparams.grad_clip_thresh
+                model.parameters(), hparams["grad_clip_thresh"]
             )
 
             optimizer.step()
@@ -214,14 +208,12 @@ def train(
                 {
                     "train/loss": reduced_loss,
                     "train/grad_norm": grad_norm,
-                    "train/learning_rate": learning_rate,
-                },
-                step=iteration,
+                }
             )
 
             if (
                 not is_overflow
-                and (iteration % hparams.iters_per_checkpoint == 0)
+                and (iteration % hparams["iters_per_checkpoint"] == 0)
                 and iteration > 0
             ):
                 validate(
@@ -229,13 +221,18 @@ def train(
                     criterion,
                     valset,
                     iteration,
-                    hparams.batch_size,
+                    hparams["batch_size"],
                     collate_fn,
                 )
+            
+            iteration += 1
+    
+    # Save final model as an Artifact
     torch.save(model.state_dict(), "model.pt")
     model_artifact = wandb.Artifact("tacotron2", type="model")
     model_artifact.add_file("model.pt")
     wandb.log_artifact(model_artifact)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -245,10 +242,18 @@ if __name__ == "__main__":
         help="<artifact:version> formatted path to dataset artifact",
     )
     parser.add_argument(
-        "-o", "--output_directory", type=str, help="directory to save checkpoints", default="output/"
+        "-o",
+        "--output_directory",
+        type=str,
+        help="directory to save checkpoints",
+        default="output/",
     )
     parser.add_argument(
-        "-l", "--log_directory", type=str, help="directory to save tensorboard logs", default="logs/"
+        "-l",
+        "--log_directory",
+        type=str,
+        help="directory to save tensorboard logs",
+        default="logs/",
     )
     parser.add_argument(
         "-c",
@@ -258,21 +263,14 @@ if __name__ == "__main__":
         required=False,
         help="checkpoint artifact name",
     )
-    parser.add_argument(
-        "--warm_start",
-        action="store_true",
-        help="load model weights only, ignore specified layers",
-    )
-    parser.add_argument(
-        "--hparams", type=str, required=False, help="comma separated name=value pairs"
-    )
 
     args = parser.parse_args()
 
-    hparams = create_hparams(args.hparams)
+    with open("hparams.yaml") as yamlfile:
+        hparams = yaml.safe_load(yamlfile)
 
-    torch.backends.cudnn.enabled = hparams.cudnn_enabled
-    torch.backends.cudnn.benchmark = hparams.cudnn_benchmark
+    torch.backends.cudnn.enabled = hparams["cudnn_enabled"]
+    torch.backends.cudnn.benchmark = hparams["cudnn_benchmark"]
 
     for directory in ["filelists", args.output_directory, args.log_directory]:
         try:
@@ -280,14 +278,13 @@ if __name__ == "__main__":
         except OSError:
             print(f"Directory {directory} already exists")
 
-    print("Dynamic Loss Scaling:", hparams.dynamic_loss_scaling)
-    print("cuDNN Enabled:", hparams.cudnn_enabled)
-    print("cuDNN Benchmark:", hparams.cudnn_benchmark)
+    print("Dynamic Loss Scaling:", hparams["dynamic_loss_scaling"])
+    print("cuDNN Enabled:", hparams["cudnn_enabled"])
+    print("cuDNN Benchmark:", hparams["cudnn_benchmark"])
 
     train(
         args.output_directory,
         args.checkpoint_artifact,
-        args.warm_start,
         hparams,
         args.dataset,
     )
