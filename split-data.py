@@ -60,7 +60,8 @@ def split_dataset(source_artifact, n_train, n_validation):
         with tarfile.open(f"{split}.tar.bz2", "w:bz2") as tarball:
             jdx = 0
             while jdx < size:
-                if not meta.loc[all_files[idx].split(".")[0], "sentence"]:
+                if not meta.loc[all_files[idx].split(".")[0], "sentence"].strip():
+                    idx += 1
                     continue
                 tarball.add(
                     f"LJSpeech-1.1/wavs/{all_files[idx]}", arcname=f"{all_files[idx]}"
