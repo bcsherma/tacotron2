@@ -113,7 +113,7 @@ def validate(
 
     model.train()
     print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-    wandb.log({"validation/predictions": table, "validation/loss": val_loss})
+    wandb.log({"predictions": table, "validation/loss": val_loss})
 
 
 def prepare_dataset(dataset):
@@ -140,7 +140,6 @@ def prepare_dataset(dataset):
 
 
 def train(
-    output_directory,
     checkpoint_path,
     hparams,
     dataset,
@@ -149,10 +148,9 @@ def train(
 
     Params
     ------
-    output_directory (string): directory to save checkpoints
-    log_directory (string) directory to save tensorboard logs
-    checkpoint_path(string): checkpoint path
+    checkpoint_path (string): checkpoint path
     hparams (object): comma separated list of "name=value" pairs.
+    dataset (string): data artifact to be loaded for training and validation
     """
 
     wandb.init(job_type="train", config=hparams)
@@ -281,7 +279,6 @@ if __name__ == "__main__":
     print("cuDNN Benchmark:", hparams["cudnn_benchmark"])
 
     train(
-        args.output_directory,
         args.checkpoint_artifact,
         hparams,
         args.dataset,
