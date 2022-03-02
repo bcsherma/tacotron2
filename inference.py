@@ -16,7 +16,15 @@ with open("hparams.yaml") as yamlfile:
     HPARAMS = yaml.safe_load(yamlfile)
 
 
-def main(tacotron_artifact, waveglow_artifact):
+def main(tacotron_artifact, waveglow_artifact, sentence_file):
+
+    with open(sentence_file) as infile:
+        sentences = [
+            sentence.strip() for sentence in infile.readlines() if sentence.strip()
+        ]
+
+    # Initialize inference table
+    inference_table = wandb.Table(columns=["sentence", "audio"])
 
     # Start wandb tracking and get artifacts
     wandb.init(job_type="inference")
@@ -36,21 +44,39 @@ def main(tacotron_artifact, waveglow_artifact):
     for k in waveglow.convinv:
         k.float()
 
-    # Get and prepare text for inference.
-    text = "Weights and Biases is a great product"
-    sequence = np.array(text_to_sequence(text, ["english_cleaners"]))[None, :]
-    sequence = torch.autograd.Variable(torch.from_numpy(sequence)).cuda().long()
+    # Tokenize sentences
+    sequences = [
+        torch.autograd.Variable(
+            torch.from_numpy(
+                np.array(text_to_sequence(text, ["english_cleaners"]))[None, :]
+            )
+        )
+        .cuda()
+        .long()
+        for text in sentences
+    ]
 
-    # Run inference
-    _, mel_outputs_postnet, _, _ = model.inference(sequence)
-    with torch.no_grad():
-        audio = waveglow.infer(mel_outputs_postnet)
-        audio = audio.cpu().numpy().astype(np.float32)
-    wandb.log({"prediction": wandb.Audio(audio[0], sample_rate=HPARAMS["sampling_rate"])})
+    # Run inference for each sequence
+    for sequence, sentence in zip(sequences, sentences):
+        _, mel_outputs_postnet, _, _ = model.inference(sequence)
+        with torch.no_grad():
+            audio = waveglow.infer(mel_outputs_postnet)
+            audio = audio.cpu().numpy().astype(np.float32)
+            inference_table.add_data(
+                sentence, wandb.Audio(audio[0], sample_rate=HPARAMS["sampling_rate"])
+            )
+
+    wandb.log({"inference": inference_table})
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("tacotron", help="tacotron model artifact to load", type=str)
     parser.add_argument("waveglow", help="waveglow model artifact to load", type=str)
+    parser.add_argument(
+        "sentences",
+        help="text file containing sentences to be converted to audio",
+        type=str,
+    )
     args = parser.parse_args()
-    main(args.tacotron, args.waveglow)
+    main(args.tacotron, args.waveglow, args.sentences)
