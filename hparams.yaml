@@ -1,7 +1,7 @@
 ################################
 # Experiment Parameters        #
 ################################
-epochs: 8
+epochs: 4
 iters_per_checkpoint: 64
 seed: 1234
 dynamic_loss_scaling: True
