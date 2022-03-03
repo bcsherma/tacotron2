@@ -1,10 +1,10 @@
 import argparse
 import os
 import tarfile
-import time
 
 import pandas as pd
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 import wandb
@@ -12,8 +12,6 @@ from data_utils import TextMelCollate, TextMelLoader
 from loss_function import Tacotron2Loss
 from model import Tacotron2
 from plotting_utils import plot_spectrogram_to_numpy
-
-import yaml
 
 
 def prepare_dataloaders(hparams):
@@ -117,6 +115,11 @@ def validate(
 
 
 def prepare_dataset(dataset):
+
+    try:
+        os.mkdir("./filelists/")
+    except OSError:
+        pass
 
     data_art = wandb.use_artifact(dataset)
 
@@ -233,23 +236,10 @@ def train(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "dataset",
+        "--dataset",
         type=str,
+        default="split-ljs:latest",
         help="<artifact:version> formatted path to dataset artifact",
-    )
-    parser.add_argument(
-        "-o",
-        "--output_directory",
-        type=str,
-        help="directory to save checkpoints",
-        default="output/",
-    )
-    parser.add_argument(
-        "-l",
-        "--log_directory",
-        type=str,
-        help="directory to save tensorboard logs",
-        default="logs/",
     )
     parser.add_argument(
         "-c",
@@ -259,20 +249,21 @@ if __name__ == "__main__":
         required=False,
         help="checkpoint artifact name",
     )
+    parser.add_argument("--learning_rate", default=None, type=float)
+    parser.add_argument("--weight_decay", default=None, type=float)
 
     args = parser.parse_args()
 
     with open("hparams.yaml") as yamlfile:
         hparams = yaml.safe_load(yamlfile)
+    
+    if args.learning_rate:
+        hparams["learning_rate"] = args.learning_rate
+    if args.weight_decay:
+        hparams["weight_decay"] = args.weight_decay
 
     torch.backends.cudnn.enabled = hparams["cudnn_enabled"]
-    torch.backends.cudnn.benchmark = hparams["cudnn_benchmark"]
-
-    for directory in ["filelists", args.output_directory, args.log_directory]:
-        try:
-            os.mkdir(directory)
-        except OSError:
-            print(f"Directory {directory} already exists")
+    torch.backends.cudnn.benchmark = hparams["cudnn_benchmark"]   
 
     print("Dynamic Loss Scaling:", hparams["dynamic_loss_scaling"])
     print("cuDNN Enabled:", hparams["cudnn_enabled"])
