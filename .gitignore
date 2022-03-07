@@ -10,3 +10,5 @@ data/
 artifacts/
 filelists/
 .vscode/
+*.patch
+test*
